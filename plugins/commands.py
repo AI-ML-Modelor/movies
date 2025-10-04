@@ -37,6 +37,164 @@ async def invite(client, message):
         print(f'Error while generating invite link : {e}\nFor chat:{toGenInvLink}')
         await message.reply(f'Error while generating invite link : {e}\nFor chat:{toGenInvLink}')
 
+import asyncio
+import math
+import re
+import random
+from Script import script
+from info import *
+from pyrogram import Client, filters, enums
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from pyrogram.errors import FloodWait, MessageNotModified
+from utils import temp, get_size, get_readable_time, formate_file_name
+from database.ia_filterdb import get_file_details, get_search_results
+from database.users_chats_db import db
+
+# -----------------------------------------------------------
+# SEND ALL FILES (Batch Send)
+# -----------------------------------------------------------
+@Client.on_callback_query(filters.regex(r"^batchfiles#"))
+async def send_all_files(client, query):
+    try:
+        _, chat_id, msg_id, req_user = query.data.split("#")
+    except:
+        return await query.answer("Invalid batch request!", show_alert=True)
+
+    if int(req_user) != query.from_user.id:
+        return await query.answer("This batch isn't for you!", show_alert=True)
+
+    files = temp.FILES_ID.get(f"{chat_id}-{msg_id}")
+    if not files:
+        return await query.answer("No files found for this batch.", show_alert=True)
+
+    await query.answer("Sending all files...", show_alert=False)
+    sent = 0
+    for file in files:
+        f_caption = file.caption or f"📁 {formate_file_name(file.file_name)}\n💾 Size: {get_size(file.file_size)}"
+        try:
+            # ✅ Try to send as cached media first
+            await client.send_cached_media(
+                chat_id=query.from_user.id,
+                file_id=file.file_id,
+                caption=f_caption,
+            )
+            sent += 1
+        except Exception as e:
+            print(f"[WARN] Cached media failed: {e}")
+            try:
+                # ✅ Fallback for PDFs and others
+                await client.send_document(
+                    chat_id=query.from_user.id,
+                    document=file.file_id,
+                    caption=f_caption,
+                )
+                sent += 1
+            except Exception as e2:
+                print(f"[ERROR] Could not send file: {e2}")
+                continue
+        await asyncio.sleep(0.5)
+
+    await query.message.reply_text(f"✅ Sent {sent} files successfully!")
+
+
+# -----------------------------------------------------------
+# SEND SINGLE FILE ON CLICK (via start=file_ or buttons)
+# -----------------------------------------------------------
+@Client.on_callback_query(filters.regex(r"^files#"))
+async def send_single_file(client, query: CallbackQuery):
+    try:
+        _, req_user, file_id = query.data.split("#")
+    except:
+        return await query.answer("Invalid data!", show_alert=True)
+
+    if int(req_user) != query.from_user.id:
+        return await query.answer(script.ALRT_TXT.format(query.from_user.first_name), show_alert=True)
+
+    filedata = await get_file_details(file_id)
+    if not filedata:
+        return await query.answer("❌ File not found.", show_alert=True)
+
+    file = filedata[0]
+    f_caption = file.caption or f"📁 {formate_file_name(file.file_name)}\n💾 Size: {get_size(file.file_size)}"
+
+    try:
+        await query.answer("Sending your file...", show_alert=False)
+    except:
+        pass
+
+    try:
+        # ✅ Try cached media first (works for video/audio)
+        await client.send_cached_media(
+            chat_id=query.from_user.id,
+            file_id=file.file_id,
+            caption=f_caption,
+        )
+    except Exception as e:
+        print(f"[WARN] Cached send failed: {e}")
+        try:
+            # ✅ Fallback for PDFs and unknown types
+            await client.send_document(
+                chat_id=query.from_user.id,
+                document=file.file_id,
+                caption=f_caption,
+            )
+        except Exception as e2:
+            print(f"[ERROR] Could not send file: {e2}")
+            await query.message.reply_text("⚠️ Unable to send this file.")
+            return
+
+    try:
+        await query.answer("✅ File sent successfully!", show_alert=False)
+    except:
+        pass
+
+
+# -----------------------------------------------------------
+# FILE SEARCH (Manual Command)
+# -----------------------------------------------------------
+@Client.on_message(filters.command("search") & filters.private)
+async def search_files(client, message):
+    if len(message.command) < 2:
+        return await message.reply_text("Usage: /search <movie name>")
+
+    query = message.text.split(maxsplit=1)[1]
+    results, next_offset, total = await get_search_results(query)
+
+    if not results:
+        return await message.reply_text("❌ No results found!")
+
+    btn = []
+    for file in results:
+        btn.append([
+            InlineKeyboardButton(
+                text=f"📁 {formate_file_name(file.file_name)} ({get_size(file.file_size)})",
+                callback_data=f"files#{message.from_user.id}#{file.file_id}",
+            )
+        ])
+    await message.reply_text(
+        f"🔍 Found <b>{total}</b> results for <code>{query}</code>.",
+        reply_markup=InlineKeyboardMarkup(btn),
+        parse_mode=enums.ParseMode.HTML,
+    )
+
+
+# -----------------------------------------------------------
+# ADMIN CLEANUP (Optional)
+# -----------------------------------------------------------
+@Client.on_message(filters.command("clear") & filters.user(ADMINS))
+async def clear_db(client, message):
+    await message.reply_text("🧹 Database cleanup not implemented in this version.")
+
+
+# -----------------------------------------------------------
+# ERROR HANDLER
+# -----------------------------------------------------------
+@Client.on_errors()
+async def error_handler(client, update, exception):
+    print(f"[ERROR] {exception}")
+    return True
+
+
 
 @Client.on_message(filters.command("start") & filters.incoming)
 async def start(client:Client, message):
@@ -1057,4 +1215,5 @@ async def verifyon(bot, message):
     
     await save_group_settings(grpid, 'is_verify', True)
     return await message.reply_text("Verification successfully enabled.")
+
 
