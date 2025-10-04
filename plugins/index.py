@@ -102,30 +102,45 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot, skip):
                     temp.CANCEL = False
                     await msg.edit(f"Successfully Cancelled!\nCompleted in {time_taken}\n\nSaved <code>{total_files}</code> files to Database!\nDuplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\nNon-Media messages skipped: <code>{no_media + unsupported}</code>\nUnsupported Media: <code>{unsupported}</code>\nErrors Occurred: <code>{errors}</code>")
                     return
+
                 current += 1
                 if current % 100 == 0:
                     btn = [[
                         InlineKeyboardButton('CANCEL', callback_data=f'index#cancel#{chat}#{lst_msg_id}#{skip}')
                     ]]
-                    await msg.edit_text(text=f"Total messages received: <code>{current}</code>\nTotal messages saved: <code>{total_files}</code>\nDuplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\nNon-Media messages skipped: <code>{no_media + unsupported}</code>\nUnsupported Media: <code>{unsupported}</code>\nErrors Occurred: <code>{errors}</code>", reply_markup=InlineKeyboardMarkup(btn))
+                    await msg.edit_text(
+                        text=f"Total messages received: <code>{current}</code>\nTotal messages saved: <code>{total_files}</code>\nDuplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\nNon-Media messages skipped: <code>{no_media + unsupported}</code>\nUnsupported Media: <code>{unsupported}</code>\nErrors Occurred: <code>{errors}</code>",
+                        reply_markup=InlineKeyboardMarkup(btn)
+                    )
                     await asyncio.sleep(2)
+
+                # Skip empty or non-media messages
                 if message.empty:
                     deleted += 1
                     continue
                 elif not message.media:
                     no_media += 1
                     continue
-                elif message.media not in [enums.MessageMediaType.VIDEO, enums.MessageMediaType.DOCUMENT]:
+
+                # Allow VIDEO, DOCUMENT (includes PDF)
+                if message.media not in [enums.MessageMediaType.VIDEO, enums.MessageMediaType.DOCUMENT]:
                     unsupported += 1
                     continue
+
                 media = getattr(message, message.media.value, None)
                 if not media:
                     unsupported += 1
                     continue
-                elif media.mime_type not in ['video/mp4', 'video/x-matroska']:
+
+                mime_type = getattr(media, "mime_type", "")
+                # Allow video/mp4, mkv, and application/pdf
+                if mime_type not in ['video/mp4', 'video/x-matroska', 'application/pdf']:
                     unsupported += 1
                     continue
+
                 media.caption = message.caption
+
+                # ✅ Save file (video or PDF)
                 sts = await save_file(media)
                 if sts == 'suc':
                     total_files += 1
@@ -133,10 +148,15 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot, skip):
                     duplicate += 1
                 elif sts == 'err':
                     errors += 1
+
         except FloodWait as e:
             await asyncio.sleep(e.x)
         except Exception as e:
             await msg.reply(f'Index canceled due to Error - {e}')
         else:
             time_taken = get_readable_time(time.time()-start_time)
-            await msg.edit(f'Succesfully saved <code>{total_files}</code> to Database!\nCompleted in {time_taken}\n\nDuplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\nNon-Media messages skipped: <code>{no_media + unsupported}</code>\nUnsupported Media: <code>{unsupported}</code>\nErrors Occurred: <code>{errors}</code>')
+            await msg.edit(
+                f'Succesfully saved <code>{total_files}</code> to Database!\nCompleted in {time_taken}\n\n'
+                f'Duplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\n'
+                f'Non-Media messages skipped: <code>{no_media + unsupported}</code>\nUnsupported Media: <code>{unsupported}</code>\nErrors Occurred: <code>{errors}</code>'
+            )
