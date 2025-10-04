@@ -21,44 +21,59 @@ class Media(Document):
     file_size = fields.IntField(required=True)
     mime_type = fields.StrField(allow_none=True)
     caption = fields.StrField(allow_none=True)
-    file_type = fields.StrField(allow_none=True)
+    file_type = fields.StrField(allow_none=True)  # video, audio, pdf
 
     class Meta:
         indexes = ('$file_name', )
         collection_name = COLLECTION_NAME
 
+
 async def get_files_db_size():
     return (await mydb.command("dbstats"))['dataSize']
-    
-async def save_file(media):
-    """Save file in database"""
 
-    # TODO: Find better way to get same file_id for same media to avoid duplicates
+
+# ✅ Save file in DB with PDF recognition
+async def save_file(media):
+    """Save file in database (Supports video, audio, and PDF)"""
     file_id, file_ref = unpack_new_file_id(media.file_id)
     file_name = re.sub(r"(_|\-|\.|\+)", " ", str(media.file_name))
+
+    # Determine file type based on mime_type
+    mime_type = getattr(media, "mime_type", "") or ""
+    if mime_type.startswith("video/"):
+        file_type = "video"
+    elif mime_type.startswith("audio/"):
+        file_type = "audio"
+    elif mime_type == "application/pdf":
+        file_type = "pdf"
+    else:
+        file_type = "unknown"
+
     try:
         file = Media(
             file_id=file_id,
             file_ref=file_ref,
             file_name=file_name,
             file_size=media.file_size,
-            mime_type=media.mime_type,
+            mime_type=mime_type,
             caption=media.caption.html if media.caption else None,
-            file_type=media.mime_type.split('/')[0]
+            file_type=file_type
         )
     except ValidationError:
-        print('Error occurred while saving file in database')
+        print('❌ Error occurred while saving file in database')
         return 'err'
     else:
         try:
             await file.commit()
-        except DuplicateKeyError:      
-            print(f'{getattr(media, "file_name", "NO_FILE")} is already saved in database') 
+        except DuplicateKeyError:
+            print(f'⚠️ {getattr(media, "file_name", "NO_FILE")} is already saved in database')
             return 'dup'
         else:
-            print(f'{getattr(media, "file_name", "NO_FILE")} is saved to database')
+            print(f'✅ {getattr(media, "file_name", "NO_FILE")} saved successfully ({file_type.upper()})')
             return 'suc'
 
+
+# ✅ Searching for all supported file types (video/audio/pdf)
 async def get_search_results(query, max_results=MAX_BTN, offset=0, lang=None):
     query = query.strip()
     if not query:
@@ -66,14 +81,17 @@ async def get_search_results(query, max_results=MAX_BTN, offset=0, lang=None):
     elif ' ' not in query:
         raw_pattern = r'(\b|[\.\+\-_])' + query + r'(\b|[\.\+\-_])'
     else:
-        raw_pattern = query.replace(' ', r'.*[\s\.\+\-_]') 
+        raw_pattern = query.replace(' ', r'.*[\s\.\+\-_]')
     try:
         regex = re.compile(raw_pattern, flags=re.IGNORECASE)
     except:
         regex = query
-    filter = {'file_name': regex}
+
+    # Fetch from all supported types
+    filter = {'file_name': regex, 'file_type': {'$in': ['video', 'audio', 'pdf']}}
     cursor = Media.find(filter)
     cursor.sort('$natural', -1)
+
     if lang:
         lang_files = [file async for file in cursor if lang in file.file_name.lower()]
         files = lang_files[offset:][:max_results]
@@ -82,14 +100,16 @@ async def get_search_results(query, max_results=MAX_BTN, offset=0, lang=None):
         if next_offset >= total_results:
             next_offset = ''
         return files, next_offset, total_results
+
     cursor.skip(offset).limit(max_results)
     files = await cursor.to_list(length=max_results)
     total_results = await Media.count_documents(filter)
     next_offset = offset + max_results
     if next_offset >= total_results:
-        next_offset = ''       
+        next_offset = ''
     return files, next_offset, total_results
-    
+
+
 async def get_bad_files(query, file_type=None, offset=0, filter=False):
     query = query.strip()
     if not query:
@@ -110,12 +130,14 @@ async def get_bad_files(query, file_type=None, offset=0, filter=False):
     cursor.sort('$natural', -1)
     files = await cursor.to_list(length=total_results)
     return files, total_results
-    
+
+
 async def get_file_details(query):
     filter = {'file_id': query}
     cursor = Media.find(filter)
     filedetails = await cursor.to_list(length=1)
     return filedetails
+
 
 def encode_file_id(s: bytes) -> str:
     r = b""
@@ -130,8 +152,10 @@ def encode_file_id(s: bytes) -> str:
             r += bytes([i])
     return base64.urlsafe_b64encode(r).decode().rstrip("=")
 
+
 def encode_file_ref(file_ref: bytes) -> str:
     return base64.urlsafe_b64encode(file_ref).decode().rstrip("=")
+
 
 def unpack_new_file_id(new_file_id):
     """Return file_id, file_ref"""
@@ -147,4 +171,3 @@ def unpack_new_file_id(new_file_id):
     )
     file_ref = encode_file_ref(decoded.file_reference)
     return file_id, file_ref
-    
