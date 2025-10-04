@@ -223,6 +223,114 @@ async def next_page(bot, query):
         pass
     await query.answer()
 
+@Client.on_callback_query(filters.regex(r"^files#"))
+async def handle_file_click(client: Client, query: CallbackQuery):
+    """
+    Handle callback_data like: files#<requester_id>#<file_id>
+    Sends the requested file to the original requester (requester_id).
+    """
+    try:
+        _, req, file_id = query.data.split("#", 2)
+    except Exception:
+        await query.answer("Invalid data!", show_alert=True)
+        return
+
+    # Restrict who can press the button (only original requester or admins/0)
+    try:
+        req_int = int(req)
+    except:
+        req_int = 0
+
+    clicker = query.from_user.id if query.from_user else 0
+    if req_int not in (clicker, 0):
+        # Not the allowed user
+        await query.answer(script.ALRT_TXT.format(query.from_user.first_name), show_alert=True)
+        return
+
+    # Fetch file details from DB
+    try:
+        files_ = await get_file_details(file_id)
+    except Exception as e:
+        await query.answer("Database error.", show_alert=True)
+        logger.error(f"[files#] DB error for {file_id}: {e}")
+        return
+
+    if not files_:
+        await query.answer("❌ File not found in database.", show_alert=True)
+        return
+
+    file = files_[0]
+
+    # Build caption
+    caption = None
+    try:
+        # prefer saved caption, fallback to file_name + size
+        caption = file.caption if getattr(file, "caption", None) else f"📁 {get_size(file.file_size)} • {formate_file_name(file.file_name)}"
+    except Exception:
+        caption = formate_file_name(getattr(file, "file_name", "File"))
+
+    # Inform the clicker we are sending the file
+    try:
+        await query.answer("Sending your file...", show_alert=False)
+    except:
+        pass
+
+    # Destination: send to requester (if callback was pressed in group by admin, file still goes to requester)
+    dest_chat = req_int if req_int else (query.from_user.id if query.from_user else query.message.chat.id)
+
+    # Try to send using cached media (same as start() usage)
+    try:
+        # For most media types cached send works:
+        # send_cached_media(chat_id, file_id, caption=...)
+        sent = await client.send_cached_media(
+            chat_id=dest_chat,
+            file_id=file.file_id,
+            caption=caption
+        )
+        # Optionally edit the inline message or notify success
+        try:
+            await query.message.edit_reply_markup()  # remove markup (optional)
+        except:
+            pass
+        return
+    except Exception as first_err:
+        # If send_cached_media fails (rare), try manual send depending on file_type
+        logger.error(f"[files#] send_cached_media failed for {file.file_id}: {first_err}")
+
+    # Fallback by file_type
+    ftype = getattr(file, "file_type", "") or ""
+    try:
+        if ftype == "video":
+            await client.send_video(chat_id=dest_chat, video=file.file_id, caption=caption)
+        elif ftype == "audio":
+            await client.send_audio(chat_id=dest_chat, audio=file.file_id, caption=caption)
+        elif ftype == "pdf" or (getattr(file, "mime_type", "") == "application/pdf"):
+            # explicit document send for PDFs
+            await client.send_document(chat_id=dest_chat, document=file.file_id, caption=f"📄 {formate_file_name(file.file_name)}\n\n{(file.caption or '')}")
+        else:
+            # final fallback: try send_document
+            await client.send_document(chat_id=dest_chat, document=file.file_id, caption=caption)
+    except pyrogram.errors.FloodWait as fw:
+        await asyncio.sleep(fw.x)
+        try:
+            await query.answer("Retrying after FloodWait...", show_alert=True)
+        except:
+            pass
+    except Exception as e:
+        logger.error(f"[files#] final send failed for {file.file_id}: {e}")
+        try:
+            await query.answer("❌ Failed to send file.", show_alert=True)
+        except:
+            pass
+        return
+
+    # Success - optionally give feedback to clicker
+    try:
+        await query.answer("✅ File sent to you.", show_alert=True)
+    except:
+        pass
+
+
     
 @Client.on_callback_query(filters.regex(r"^seasons#"))
 async def seasons_cb_handler(client: Client, query: CallbackQuery):
@@ -1648,5 +1756,6 @@ async def advantage_spell_chok(message):
         await message.delete()
     except:
         pass
+
 
 
