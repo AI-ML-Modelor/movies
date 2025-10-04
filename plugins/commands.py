@@ -189,10 +189,6 @@ async def clear_db(client, message):
 # -----------------------------------------------------------
 # ERROR HANDLER
 # -----------------------------------------------------------
-@Client.on_errors()
-async def error_handler(client, update, exception):
-    print(f"[ERROR] {exception}")
-    return True
 
 
 
@@ -1215,5 +1211,6 @@ async def verifyon(bot, message):
     
     await save_group_settings(grpid, 'is_verify', True)
     return await message.reply_text("Verification successfully enabled.")
+
 
 
